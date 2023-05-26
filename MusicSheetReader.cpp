@@ -8,20 +8,20 @@
 #define RUN_PYTHON_SCRIPT true
 #define PYTHON_COMMAND "python3 /home/broland/Documents/ut/ip/music_sheet_reader_py/NotesToMidi.py"
 
-#define IMAGE_PATH "Images/tannenbaum.bmp"		// path of image being processed
+#define IMAGE_PATH "Images/mary.bmp"		// path of image being processed
 #define THRESHOLD_FOR_BINARY 150				// below this, consider black (0, object) pixel, above white (1, background) pixel
 #define THRESHOLD_FOR_LINE 0.5					// a row is considered to have a music sheet line if it has more than this percent (of the image width) pixels black
 
-#define SHOW_GRAYSCALE_IMAGE true
+#define SHOW_GRAYSCALE_IMAGE false
 #define SHOW_BINARY_IMAGE true
-#define SHOW_HORIZONTAL_PROJECTION true
-#define SHOW_LINES true
+#define SHOW_HORIZONTAL_PROJECTION false
+#define SHOW_LINES false
 #define SHOW_DILATION false
 #define SHOW_EROSION false
 #define SHOW_OPENING false
 #define SHOW_CONNECTED_COMPONENTS_BFS true
 #define SHOW_AREA false
-#define SHOW_CENTER_OF_MASS true
+#define SHOW_CENTER_OF_MASS false
 #define SHOW_ALL_NOTES true
 
 #define MIN_NOTE_AREA 25
@@ -66,19 +66,6 @@ struct staff_ {
 };
 
 
-struct temporaryNote {
-    name_ name;
-    int octave;
-    duration_ duration;
-    int x;
-    int label;
-};
-
-
-bool compareTemporaryNotes(const temporaryNote& a, const temporaryNote& b)
-{
-    return a.x < b.x;
-}
 
 std::string encodeNote(note_ n) {
     char encoding[4];
@@ -235,6 +222,7 @@ std::vector<int> getHorizontalProjection(cv::Mat_<uchar> img) {
     return horizontalProjection;
 }
 
+std::vector<int> linesOverThreshold;
 
 // Extract the music sheet lines
 std::vector<staff_> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalProjection) {
@@ -248,9 +236,12 @@ std::vector<staff_> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalPr
         // if we meet a line
         if (horizontalProjection[i] > threshold) {
             currentStaff.lines[lineCounter % 5] = line_ { i };
+            linesOverThreshold.push_back(i);
 
             // skip "redundant" lines
+            i++;
             while (i < horizontalProjection.size() && horizontalProjection[i] > threshold) {
+                linesOverThreshold.push_back(i);
                 i++;
             }
 
@@ -548,7 +539,7 @@ cv::Point2i centerOfMass(cv::Mat_<uchar> img) {
 
 
 // draw a cross on image img, "around" point p, with given diameter
-void drawCross(cv::Mat_<uchar> img, cv::Point2i p, int diameter) {
+void drawCross(cv::Mat_<uchar> img, cv::Point2i p, int diameter, int color=255) {
     // calculate potential end coordinates of cross
     int halfDiameter = diameter / 2;
     int xl = p.x - halfDiameter;	// x left
@@ -575,8 +566,8 @@ void drawCross(cv::Mat_<uchar> img, cv::Point2i p, int diameter) {
     cv::Point2i r(xr, p.y);
     cv::Point2i t(p.x, yt);
     cv::Point2i b(p.x, yb);
-    cv::line(img, l, r, 255);
-    cv::line(img, t, b, 255);
+    cv::line(img, l, r, color);
+    cv::line(img, t, b, color);
 }
 
 
@@ -598,29 +589,215 @@ cv::Mat_<uchar> extractComponent(cv::Mat_<int> labelImg, int label) {
 }
 
 
-void removeComponent(cv::Mat_<int> labelImg, int label) {
-    for (int i = 0; i < labelImg.rows; i++) {
-        for (int j = 0; j < labelImg.cols; j++) {
-            if (labelImg(i, j) == label) {
-                labelImg(i, j) = 255;
+duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flagImg) {
+
+    /* ez jo
+    uchar pattern1[25] = {
+            255,  255,		0,		255,	255,
+            255,  255,		0,		255,	255,
+            255,  255,		0,		255,	255,
+            255,  255,		0,		255,	255,
+            255,  255,		0,		255,	255,
+    };
+    const cv::Mat_<uchar> sel1 = cv::Mat(5, 5, CV_8UC1, pattern1);
+    */
+    uchar pattern1[12] = {
+              255,		0,		255,
+              255,		0,		255,
+              255,		0,		255,
+              255,		0,		255,
+    };
+    const cv::Mat_<uchar> sel1 = cv::Mat(4, 3, CV_8UC1, pattern1);
+
+    cv::Mat_<uchar> noLinesImg = opening(img, sel1);
+
+    cv::imshow("noline", noLinesImg);
+
+
+    uchar pattern2[12] = {
+            255,  255,		255,
+            0,  0,		0,
+            0,  0,		0,
+            255,  255,		255,
+    };
+
+    uchar pattern3[9] = {
+            255,  0,		255,
+            0, 0,		0,
+            255, 0, 255
+    };
+
+
+    const cv::Mat_<uchar> sel2 = cv::Mat(4, 3, CV_8UC1, pattern2);
+    const cv::Mat_<uchar> sel3 = cv::Mat(3, 3, CV_8UC1, pattern3);
+
+    //cv::Mat_<uchar> aux = dilation(img, sel2);
+    //cv::Mat_<uchar> aux2 = dilation(aux, sel2);
+    //cv::Mat_<uchar> aux = dilation(img, sel3);
+
+    cv::Mat_<uchar> aux = erosion(img, sel2);
+    cv::Mat_<uchar> noLinesImg2 = dilation(aux, sel2);
+
+
+    //cv::Mat_<uchar> noLinesImg2 = erosion(img, sel2);
+
+
+    //cv::Mat_<uchar> noLinesImg2 = erosion(aux, sel2);
+
+    //cv::Mat_<uchar> noLinesImg2 = opening(img, sel2);
+    cv::imshow("noline2", noLinesImg2);
+
+    // start of a new connected component (new BFS)
+    std::queue<cv::Point2i> Q;
+    Q.push(com);
+
+    // index offsets for 8-neighborhood
+    int di[8] = { -1, -1, -1, 0, 1, 1,  1,  0 };
+    int dj[8] = { -1,  0,  1, 1, 1, 0, -1, -1 };
+
+    int pi, pj;	// pixel index
+    int ni, nj;	// neighbor index
+
+    cv::Mat_<uchar> compImg(img.rows, img.cols);
+    for (int i = 0; i < img.rows; i++) {
+        for (int j = 0; j < img.cols; j++) {
+            compImg(i, j) = 255;
+        }
+    }
+
+
+
+    //int NOTE_NEIGHBORHOOD = 1000;
+    while (!Q.empty()) {
+        //printf("value at COM: %d\n", img());
+        // dequeue and decompose
+        cv::Point2i p = Q.front();
+        pi = p.y;
+        pj = p.x;
+        Q.pop();
+
+        // for each neighbor
+        for (int k = 0; k < 8; k++) {
+            ni = pi + di[k];
+            nj = pj + dj[k];
+
+            //if (nj < com.x - NOTE_NEIGHBORHOOD || nj > com.x + NOTE_NEIGHBORHOOD) {
+            //    continue;
+            //}
+
+            // discard out of bounds neighbors
+            if (!isInside(img, ni, nj)) {
+                continue;
+            }
+
+            // discard non-object and already labeled neighbor pixels
+            if (noLinesImg(ni, nj) != 0 || compImg(ni, nj) == 0) {
+                continue;
+            }
+
+            compImg(ni, nj) = 0;
+            Q.push(cv::Point2i (nj, ni));
+        }
+    }
+
+    cv::imshow("labelsimg", compImg);
+    cv::Point2i newCom = centerOfMass(compImg);
+
+    int endX, endY;
+    if (newCom.y < com.y) {
+        // looking for uppermost point -> first one we meet
+        for (int i = 0; i < img.rows; i++) {
+            for (int j = 0; j < img.cols; j++) {
+                if (compImg(i, j) == 0) {
+                    endX = j;
+                    endY = i;
+                    goto found;
+                }
             }
         }
     }
+    else {
+        // looking for lowermost point -> last one we meet
+        for (int i = 0; i < img.rows; i++) {
+            for (int j = 0; j < img.cols; j++) {
+                if (compImg(i, j) == 0) {
+                    endX = j;
+                    endY = i;
+                }
+            }
+        }
+    }
+    found:
+    cv::Point2i endPoint = cv::Point2i(endX, endY);
+
+    //drawCross(flagImg, newCom, 10, 0);
+
+    //drawCross(imgRes, lastPoint, 10)
+
+    int xOffset = 3;
+    int yOffset = 1;
+    int fx, fy;
+
+    // may have stem under note head
+    if (newCom.y > com.y) {
+        fy = endPoint.y - yOffset;
+        fx = endPoint.x + xOffset;  // check to the right
+
+        if(std::find(linesOverThreshold.begin(), linesOverThreshold.end(), fy) != linesOverThreshold.end()) {
+            return quarter;
+        }
+
+        // todo have staff here, check if y line, if so, skip until not line (increment/decrement)
+        if (img(fy, fx) == 0) {
+            drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+            return eighth;
+        }
+
+        fx = endPoint.x - xOffset;  // check to the left
+        if (img(fy, fx) == 0) {
+            drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+            return eighth;
+        }
+
+        //drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+        return quarter;
+    }
+
+    // may have stem over note head
+    fy = endPoint.y + yOffset;
+    fx = endPoint.x + xOffset;  // check to the right
+    if(std::find(linesOverThreshold.begin(), linesOverThreshold.end(), fy) != linesOverThreshold.end()) {
+        return quarter;
+    }
+
+    if (img(fy, fx) == 0) {
+        drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+        return eighth;
+    }
+
+    fx = endPoint.x - xOffset;  // check to the left
+    if (img(fy, fx) == 0) {
+        drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+        return eighth;
+    }
+
+    //drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
+    return quarter;
+
+
+
+    //cv::imshow("Note", imgRes);
+
 }
-
-
-
 
 
 std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, int maxLabel, std::vector<staff_> staffs) {
     cv::Mat_<uchar> crossImg = cv::Mat::zeros(labelImg.rows, labelImg.cols, CV_8UC1);
 
     std::vector<int> noteLabels;
-    std::vector<temporaryNote> temporaryNotes;
-    //std::vector<std::pair<note_, int>> notesAndX;
-    //std::vector<note_> notes;
+    std::vector<note_> notes;
 
-    std::vector<std::vector<temporaryNote>> staffsWithTempNotes(staffs.size() + 1);  // why are there notes with staffNo 4 ??
+    cv::Mat_<uchar> flagImg = copyImageWithGrayUchar(binaryImg);
 
     // go through labels, skip 0 (background)
     for (int label = 1; label <= maxLabel; label++) {
@@ -647,8 +824,12 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
             drawCross(crossImg, com, 50);
         }
 
+        //if (label == 10) {
+        duration_ duration = getDuration(binaryImg, com, flagImg);
+        //}
+
         // passed all requirements => is considered a note_
-        printf("%d: (%d,%d)\n", label, com.x, com.y);
+        // printf("%d: (%d,%d)\n", label, com.x, com.y);
 
         int tolerance = 1;
         int maxOffset = 5;
@@ -693,12 +874,12 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
             }
             else if (com.y < s.lines[2].y + tolerance) {
                 n = B;
-                octave = 5;
+                octave = 4;
                 processed = true;
             }
             else if (com.y < s.lines[3].y - tolerance) {
                 n = A;
-                octave = 5;
+                octave = 4;
                 processed = true;
             }
             else if (com.y < s.lines[3].y + tolerance) {
@@ -728,25 +909,14 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
             continue;
         }
 
-        staffsWithTempNotes[staffNo].push_back(temporaryNote{n, octave, quarter, com.x, label });
         noteLabels.push_back(label);
+        notes.push_back(note_{ n, octave, duration });
     }
+
+    cv::imshow("Flags", flagImg);
 
     if (SHOW_CENTER_OF_MASS) {
         imshow("CenterOfMass", crossImg);
-    }
-
-    // sort notes on each staff_
-    for (std::vector<temporaryNote> swtn : staffsWithTempNotes) {
-        std::sort(swtn.begin(), swtn.end(), compareTemporaryNotes);
-    }
-
-    // extract notes while keeping order
-    std::vector<note_> notes;
-    for (std::vector<temporaryNote> swtn : staffsWithTempNotes) {
-        for (temporaryNote tn : swtn) {
-            notes.push_back(note_{tn.name, tn.octave, tn.duration });
-        }
     }
 
     if (SHOW_ALL_NOTES) {
