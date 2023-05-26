@@ -1,72 +1,80 @@
-#include <opencv2/opencv.hpp>
-#include <random>		// needed for pseudorandom label coloring
-#include <iostream>		// for writing to standard output
-#include <fstream>		// for writing to file
-#include <string>
-#include <algorithm>	// for sort
+#include <opencv2/opencv.hpp>       // include opencv on linux
+#include <random>		            // for random colors for connected components
+#include <iostream>		            // for printing to standard output
+#include <fstream>		            // for writing notes.txt
+#include <string>                   // for easier handling of encoded notes
+
 
 #define RUN_PYTHON_SCRIPT true
 #define PYTHON_COMMAND "python3 /home/broland/Documents/ut/ip/music_sheet_reader_py/NotesToMidi.py"
 
-#define IMAGE_PATH "Images/mary.bmp"		// path of image being processed
-#define THRESHOLD_FOR_BINARY 150				// below this, consider black (0, object) pixel, above white (1, background) pixel
-#define THRESHOLD_FOR_LINE 0.5					// a row is considered to have a music sheet line if it has more than this percent (of the image width) pixels black
+#define IMAGE_PATH "Images/tannenbaum.bmp"		// path of image being processed
+#define THRESHOLD_FOR_BINARY 150				// below object pixel, above background pixel
+#define THRESHOLD_FOR_LINE 0.5					// lines with image_width * this value are considered lines
+
+#define MIN_NOTE_AREA 25                        // in order to be considered a note head, must have
+#define MAX_NOTE_AREA 45                        //  MIN_NOTE_AREA < area < MAX_NOTE_AREA
+#define LINE_OFFSET_TOLERANCE 1                 // connected components with greater offset from a staff are discarded
+#define MIN_X_NOTE_HEAD 62                      // everything on the left side of this is discarded
 
 #define SHOW_GRAYSCALE_IMAGE false
 #define SHOW_BINARY_IMAGE true
 #define SHOW_HORIZONTAL_PROJECTION false
-#define SHOW_LINES false
-#define SHOW_DILATION false
-#define SHOW_EROSION false
+#define SHOW_STAFFS true
 #define SHOW_OPENING false
 #define SHOW_CONNECTED_COMPONENTS_BFS true
 #define SHOW_AREA false
+#define SHOW_NO_LINE true
 #define SHOW_CENTER_OF_MASS false
+#define SHOW_FLAGS false
 #define SHOW_ALL_NOTES true
-
-#define MIN_NOTE_AREA 25
-#define MAX_NOTE_AREA 45
-#define LINE_OFFSET_TOLERANCE 1
+#define SHOW_NOTE_ENCODINGS false
 
 
-// structuring element for opening
-uchar pattern[25] = {
+uchar noteHeadPattern[25] = {
         255,	255,		0,		255,	255,
         255,	  0,		0,		  0,	255,
-          0,	  0,		0,		  0,	  0,
+        0,	      0,		0,		  0,	  0,
         255,	  0,		0,		  0,	255,
         255,	255,		0,		255,	255,
 };
-const cv::Mat_<uchar> sel = cv::Mat(5, 5, CV_8UC1, pattern);
+const cv::Mat_<uchar> noteHeadStructuringElement = cv::Mat(5, 5, CV_8UC1, noteHeadPattern);
+
+uchar stemPattern[12] = {
+        255,		0,		255,
+        255,		0,		255,
+        255,		0,		255,
+        255,		0,		255,
+};
+const cv::Mat_<uchar> stemStructuringElement = cv::Mat(4, 3, CV_8UC1, stemPattern);
 
 
-// duration of a musical note_
-enum duration_ { whole, half, quarter, eighth ,sixteenth };
+// duration of a musical note
+enum duration_ { whole, half, quarter, eighth, sixteenth };
 
-// actual "value", "name" of musical note_
+// actual "value", "name" of musical note
 enum name_ { C, D, E, F, G, A, B };
 
-
-// structure for a musical note_
+// structure for a musical note
 struct note_ {
     name_ name;
-    int octave;			// most usual is 4th
-    duration_ duration;
+    int octave;	            // most common is 4th
+    duration_ duration;     // most common is quarter
 };
 
 // structure for an extracted line
 struct line_ {
-    int y;				// y coordinate of the line on the image
+    int y;				    // the y coordinate of the line on the image
 };
 
-// lines grouped by 5 (a staff_), upmost staff_ is 0
-// lines defined by index, uppermost is 0 (E4 as note_), lowermost is 4 (A5 as note_)
+// lines grouped by 5 (a staff), upmost staff is 0
+// lines defined by index, uppermost is 0 (E4 as note), lowermost is 4 (A5 as note)
 struct staff_ {
     line_ lines[5];
 };
 
 
-
+// Given a note n as input return its encoding for passing on to the python script
 std::string encodeNote(note_ n) {
     char encoding[4];
     switch (n.name) {
@@ -95,12 +103,12 @@ std::string encodeNote(note_ n) {
 
 
 // Check if pixel at location (i,j) is inside the picture
-bool isInside(cv::Mat img, int i, int j) {
+bool isInside(const cv::Mat& img, int i, int j) {
     return (i >= 0 && i < img.rows) && (j >= 0 && j < img.cols);
 }
 
 
-// Open the image and handles potential error
+// Open the image and handle potential error
 cv::Mat_<uchar> openGrayscaleImage() {
     cv::Mat_<uchar> img = cv::imread(IMAGE_PATH,cv::IMREAD_GRAYSCALE);
 
@@ -110,7 +118,7 @@ cv::Mat_<uchar> openGrayscaleImage() {
     }
 
     if (SHOW_GRAYSCALE_IMAGE) {
-        imshow("Open Grayscale Image", img);
+        imshow("Grayscale Image", img);
     }
 
     return img;
@@ -124,16 +132,16 @@ cv::Mat_<uchar> convertToBinary(cv::Mat_<uchar> img) {
     for (int i = 0; i < img.rows; i++) {
         for (int j = 0; j < img.cols; j++) {
             if (img(i, j) < THRESHOLD_FOR_BINARY) {
-                imgRes(i, j) = 0;	// black
+                imgRes(i, j) = 0;
             }
             else {
-                imgRes(i, j) = 255;	// white
+                imgRes(i, j) = 255;
             }
         }
     }
 
     if (SHOW_BINARY_IMAGE) {
-        imshow("Convert To Binary", imgRes);
+        imshow("Binary Image", imgRes);
     }
 
     return imgRes;
@@ -159,7 +167,7 @@ cv::Mat_<uchar> copyImageWithGrayUchar(cv::Mat_<uchar> img) {
 }
 
 
-// Return a binary image with black values 230 instead of 0 (visualization purposes)
+// Same as copyImageWithGrayUchar but for three channel color images
 cv::Mat_<cv::Vec3b> copyImageWithGrayVec3b(cv::Mat_<uchar> img) {
     cv::Mat_<cv::Vec3b> imgRes(img.rows, img.cols);
 
@@ -178,7 +186,7 @@ cv::Mat_<cv::Vec3b> copyImageWithGrayVec3b(cv::Mat_<uchar> img) {
 }
 
 
-// "Put imgTop on imgBottom", return result
+// "Put imgTop on imgBottom", return result (for visualization purposes)
 cv::Mat_<uchar> overlayImages(cv::Mat_<uchar> imgBottom, cv::Mat_<uchar> imgTop) {
     cv::Mat_<uchar> imgRes(imgBottom.rows, imgBottom.cols);
 
@@ -197,7 +205,7 @@ cv::Mat_<uchar> overlayImages(cv::Mat_<uchar> imgBottom, cv::Mat_<uchar> imgTop)
 }
 
 
-// Return the horizontal projection: hp[i] = number of pixels on row i
+// Return the horizontal projection: horizontalProjection[i] = number of pixels on row i
 std::vector<int> getHorizontalProjection(cv::Mat_<uchar> img) {
     std::vector<int> horizontalProjection(img.rows);
 
@@ -222,40 +230,48 @@ std::vector<int> getHorizontalProjection(cv::Mat_<uchar> img) {
     return horizontalProjection;
 }
 
-std::vector<int> linesOverThreshold;
 
-// Extract the music sheet lines
-std::vector<staff_> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalProjection) {
-    std::vector<staff_> staffs;
-
+// Get a vector of all lines which satisfy the threshold
+std::vector<int> getLinesOverThreshold(const cv::Mat_<uchar>& img, std::vector<int> horizontalProjection) {
+    std::vector<int> linesOverThreshold;
     int threshold = img.cols * THRESHOLD_FOR_LINE;
-    int lineCounter = 0;
-    staff_ currentStaff = {};
 
     for (int i = 0; i < horizontalProjection.size(); i++) {
-        // if we meet a line
         if (horizontalProjection[i] > threshold) {
-            currentStaff.lines[lineCounter % 5] = line_ { i };
             linesOverThreshold.push_back(i);
-
-            // skip "redundant" lines
-            i++;
-            while (i < horizontalProjection.size() && horizontalProjection[i] > threshold) {
-                linesOverThreshold.push_back(i);
-                i++;
-            }
-
-            lineCounter++;
-
-            // if all 5 lines found, save currentStaff and reset it
-            if (lineCounter % 5 == 0) {
-                staffs.push_back(currentStaff);
-                currentStaff = {};
-            }
         }
     }
 
-    if (SHOW_LINES) {
+    return linesOverThreshold;
+}
+
+
+// Process the possible lines: extract actual lines and group them in staffs
+std::vector<staff_> getStaffs(const cv::Mat_<uchar>& img, std::vector<int> linesOverThreshold) {
+    std::vector<staff_> staffs;
+
+    int lineCounter = 0;
+    staff_ currentStaff = {};
+
+    int i = 0;
+    while (i < linesOverThreshold.size()) {
+        currentStaff.lines[lineCounter % 5] = line_ { linesOverThreshold[i] };
+
+        // skip consecutive "lines" since they represent the same line
+        i++;
+        while (i < linesOverThreshold.size() && linesOverThreshold[i] == linesOverThreshold[i - 1] + 1) {
+            i++;
+        }
+
+        // if all 5 lines found, save currentStaff and restart collecting
+        lineCounter++;
+        if (lineCounter % 5 == 0) {
+            staffs.push_back(currentStaff);
+            currentStaff = {};
+        }
+    }
+
+    if (SHOW_STAFFS) {
         cv::Mat_<cv::Vec3b> imgRes = copyImageWithGrayVec3b(img);
 
         // use two colors to somewhat distinguish nearby staffs
@@ -317,12 +333,6 @@ cv::Mat_<uchar> erosion(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
         }
     }
 
-    if (SHOW_EROSION) {
-        cv::Mat_<uchar> resImg = copyImageWithGrayUchar(img);
-        resImg = overlayImages(resImg, erosionImg);
-        cv::imshow("Erosion", resImg);
-    }
-
     return erosionImg;
 }
 
@@ -361,20 +371,13 @@ cv::Mat_<uchar> dilation(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
         }
     }
 
-    if (SHOW_DILATION) {
-        // effect will not be seen as dilationImg fully covers img (eroded image)
-        cv::Mat_<uchar> resImg = copyImageWithGrayUchar(img);
-        resImg = overlayImages(resImg, dilationImg);
-        cv::imshow("Dilation", resImg);
-    }
-
     return dilationImg;
 }
 
 
 // "Opening consists of an erosion followed by a dilation and can be used to eliminate
 //  all pixels in regions that are too small to contain the structuring element."
-cv::Mat_<uchar> opening(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
+cv::Mat_<uchar> opening(cv::Mat_<uchar> img, const cv::Mat_<uchar>& sel) {
     cv::Mat_<uchar> imgAux = erosion(img, sel);
     cv::Mat_<uchar> imgRes = dilation(imgAux, sel);
 
@@ -387,17 +390,17 @@ cv::Mat_<uchar> opening(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
 
 
 // Search for connected components in img using Breadth First Traversal
-// Note that the direction of going through the image corresponds to the direction of reading a music sheet
-cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff_> staffs, int &maxLabel) {
-    int currentLabel = 0;						// counter for labeling
-    cv::Mat_<int> labelsImg(img.rows, img.cols, 0);	// labels of corresponding pixels, initially all 0s (unlabeled)
+// Modified for the project's needs: it follows the reading direction of a music sheet so labeling comes "in order"
+cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, const std::vector<staff_>& staffs, int &maxLabel) {
+    int currentLabel = 0;						        // counter for labeling
+    cv::Mat_<int> labelsImg(img.rows, img.cols, 0);	    // labels of corresponding pixels, initially all 0s (unlabeled)
 
     // index offsets for 8-neighborhood
     int di[8] = { -1, -1, -1, 0, 1, 1,  1,  0 };
     int dj[8] = { -1,  0,  1, 1, 1, 0, -1, -1 };
 
-    int pi, pj;	// pixel index
-    int ni, nj;	// neighbor index
+    int pi, pj;	 // pixel index
+    int ni, nj;	 // neighbor index
 
     std::vector<std::pair<int, int>> staffRanges;
     for (staff_ s : staffs) {
@@ -460,14 +463,13 @@ cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff_> st
         std::uniform_int_distribution<int> d(0, 255);
         std::vector<cv::Vec3b> colors(currentLabel + 1);	// labeling has range [0, currentLabel]
 
-        colors[0] = cv::Vec3b(255.0, 255.0, 255.0);  // we consider 0 unlabeled, i.e. background
+        colors[0] = cv::Vec3b(255.0, 255.0, 255.0);         // we consider 0 unlabeled, i.e. background
         bool seenLabel[currentLabel + 1];
         for (int i = 1; i <= currentLabel; i++) {
             colors[i] = cv::Vec3b(d(gen), d(gen), d(gen));	// other labels have random color
             seenLabel[i] = false;
         }
 
-        //int count = 0;
         cv::Mat_<cv::Vec3b> colorImg(labelsImg.rows, labelsImg.cols);
         for (int i = 0; i < labelsImg.rows; i++) {
             for (int j = 0; j < labelsImg.cols; j++) {
@@ -490,8 +492,6 @@ cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff_> st
                 }
             }
         }
-
-
 
         cv::imshow("Connected Components BFS", colorImg);
     }
@@ -538,7 +538,7 @@ cv::Point2i centerOfMass(cv::Mat_<uchar> img) {
 }
 
 
-// draw a cross on image img, "around" point p, with given diameter
+// Draw a cross on image img, "around" point p, with given diameter (and optionally color)
 void drawCross(cv::Mat_<uchar> img, cv::Point2i p, int diameter, int color=255) {
     // calculate potential end coordinates of cross
     int halfDiameter = diameter / 2;
@@ -571,6 +571,7 @@ void drawCross(cv::Mat_<uchar> img, cv::Point2i p, int diameter, int color=255) 
 }
 
 
+// Extract a binary object from the labels image
 cv::Mat_<uchar> extractComponent(cv::Mat_<int> labelImg, int label) {
     cv::Mat_<uchar> resImg(labelImg.rows, labelImg.cols);
 
@@ -589,63 +590,13 @@ cv::Mat_<uchar> extractComponent(cv::Mat_<int> labelImg, int label) {
 }
 
 
-duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flagImg) {
+// Get duration of a note
+duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, const cv::Mat_<uchar>& flagImg, std::vector<int> linesOverThreshold) {
+    cv::Mat_<uchar> noLinesImg = opening(img, stemStructuringElement);
 
-    /* ez jo
-    uchar pattern1[25] = {
-            255,  255,		0,		255,	255,
-            255,  255,		0,		255,	255,
-            255,  255,		0,		255,	255,
-            255,  255,		0,		255,	255,
-            255,  255,		0,		255,	255,
-    };
-    const cv::Mat_<uchar> sel1 = cv::Mat(5, 5, CV_8UC1, pattern1);
-    */
-    uchar pattern1[12] = {
-              255,		0,		255,
-              255,		0,		255,
-              255,		0,		255,
-              255,		0,		255,
-    };
-    const cv::Mat_<uchar> sel1 = cv::Mat(4, 3, CV_8UC1, pattern1);
-
-    cv::Mat_<uchar> noLinesImg = opening(img, sel1);
-
-    cv::imshow("noline", noLinesImg);
-
-
-    uchar pattern2[12] = {
-            255,  255,		255,
-            0,  0,		0,
-            0,  0,		0,
-            255,  255,		255,
-    };
-
-    uchar pattern3[9] = {
-            255,  0,		255,
-            0, 0,		0,
-            255, 0, 255
-    };
-
-
-    const cv::Mat_<uchar> sel2 = cv::Mat(4, 3, CV_8UC1, pattern2);
-    const cv::Mat_<uchar> sel3 = cv::Mat(3, 3, CV_8UC1, pattern3);
-
-    //cv::Mat_<uchar> aux = dilation(img, sel2);
-    //cv::Mat_<uchar> aux2 = dilation(aux, sel2);
-    //cv::Mat_<uchar> aux = dilation(img, sel3);
-
-    cv::Mat_<uchar> aux = erosion(img, sel2);
-    cv::Mat_<uchar> noLinesImg2 = dilation(aux, sel2);
-
-
-    //cv::Mat_<uchar> noLinesImg2 = erosion(img, sel2);
-
-
-    //cv::Mat_<uchar> noLinesImg2 = erosion(aux, sel2);
-
-    //cv::Mat_<uchar> noLinesImg2 = opening(img, sel2);
-    cv::imshow("noline2", noLinesImg2);
+    if (SHOW_NO_LINE) {
+        cv::imshow("No Line", noLinesImg);
+    }
 
     // start of a new connected component (new BFS)
     std::queue<cv::Point2i> Q;
@@ -658,6 +609,7 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
     int pi, pj;	// pixel index
     int ni, nj;	// neighbor index
 
+    // a new canvas for extracting connected component starting from center of mass => the note with the stem
     cv::Mat_<uchar> compImg(img.rows, img.cols);
     for (int i = 0; i < img.rows; i++) {
         for (int j = 0; j < img.cols; j++) {
@@ -665,11 +617,7 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
         }
     }
 
-
-
-    //int NOTE_NEIGHBORHOOD = 1000;
     while (!Q.empty()) {
-        //printf("value at COM: %d\n", img());
         // dequeue and decompose
         cv::Point2i p = Q.front();
         pi = p.y;
@@ -680,10 +628,6 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
         for (int k = 0; k < 8; k++) {
             ni = pi + di[k];
             nj = pj + dj[k];
-
-            //if (nj < com.x - NOTE_NEIGHBORHOOD || nj > com.x + NOTE_NEIGHBORHOOD) {
-            //    continue;
-            //}
 
             // discard out of bounds neighbors
             if (!isInside(img, ni, nj)) {
@@ -700,7 +644,7 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
         }
     }
 
-    cv::imshow("labelsimg", compImg);
+    // get new center of mass, so we know the direction the stem goes
     cv::Point2i newCom = centerOfMass(compImg);
 
     int endX, endY;
@@ -730,10 +674,6 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
     found:
     cv::Point2i endPoint = cv::Point2i(endX, endY);
 
-    //drawCross(flagImg, newCom, 10, 0);
-
-    //drawCross(imgRes, lastPoint, 10)
-
     int xOffset = 3;
     int yOffset = 1;
     int fx, fy;
@@ -747,7 +687,6 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
             return quarter;
         }
 
-        // todo have staff here, check if y line, if so, skip until not line (increment/decrement)
         if (img(fy, fx) == 0) {
             drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
             return eighth;
@@ -759,7 +698,6 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
             return eighth;
         }
 
-        //drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
         return quarter;
     }
 
@@ -781,23 +719,19 @@ duration_ getDuration(cv::Mat_<uchar> img, cv::Point2i com, cv::Mat_<uchar> flag
         return eighth;
     }
 
-    //drawCross(flagImg, cv::Point2i(fx, fy), 10, 50);
     return quarter;
-
-
-
-    //cv::imshow("Note", imgRes);
-
 }
 
 
-std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, int maxLabel, std::vector<staff_> staffs) {
-    cv::Mat_<uchar> crossImg = cv::Mat::zeros(labelImg.rows, labelImg.cols, CV_8UC1);
+std::vector<note_> extractNotes(const cv::Mat_<int>& binaryImg, cv::Mat_<int> labelImg, int maxLabel, std::vector<staff_> staffs, const std::vector<int>& linesOverThreshold) {
+    // image to show each node head's center of mass (with drawCross)
+    cv::Mat_<uchar> comImg = cv::Mat::zeros(labelImg.rows, labelImg.cols, CV_8UC1);
+
+    // image to show flag/beam detection points (with drawCross)
+    cv::Mat_<uchar> flagImg = copyImageWithGrayUchar(binaryImg);
 
     std::vector<int> noteLabels;
     std::vector<note_> notes;
-
-    cv::Mat_<uchar> flagImg = copyImageWithGrayUchar(binaryImg);
 
     // go through labels, skip 0 (background)
     for (int label = 1; label <= maxLabel; label++) {
@@ -817,19 +751,14 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
         if (com.y < staffs[0].lines[0].y) {
             continue;
         }
-        if (com.x < 62) {
+        if (com.x < MIN_X_NOTE_HEAD) {
             continue;
         }
         if (SHOW_CENTER_OF_MASS) {
-            drawCross(crossImg, com, 50);
+            drawCross(comImg, com, 50);
         }
 
-        //if (label == 10) {
-        duration_ duration = getDuration(binaryImg, com, flagImg);
-        //}
-
-        // passed all requirements => is considered a note_
-        // printf("%d: (%d,%d)\n", label, com.x, com.y);
+        duration_ duration = getDuration(binaryImg, com, flagImg, linesOverThreshold);
 
         int tolerance = 1;
         int maxOffset = 5;
@@ -913,10 +842,12 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
         notes.push_back(note_{ n, octave, duration });
     }
 
-    cv::imshow("Flags", flagImg);
-
     if (SHOW_CENTER_OF_MASS) {
-        imshow("CenterOfMass", crossImg);
+        imshow("CenterOfMass", comImg);
+    }
+
+    if (SHOW_FLAGS) {
+        cv::imshow("Flags", flagImg);
     }
 
     if (SHOW_ALL_NOTES) {
@@ -940,17 +871,19 @@ std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg,
     return notes;
 }
 
-void writeNotesToFile(std::vector<note_> notes) {
+
+// Generate notes.txt
+void writeNotesToFile(const std::vector<note_>& notes) {
     std::ofstream outFile;
     outFile.open("notes.txt");
 
-    if (SHOW_ALL_NOTES) {
+    if (SHOW_NOTE_ENCODINGS) {
         std::cout << "Encoded notes:" << std::endl;
     }
 
     for (note_ n : notes) {
         std::string encodedNote = encodeNote(n);
-        if (SHOW_ALL_NOTES) {
+        if (SHOW_NOTE_ENCODINGS) {
             std::cout << encodedNote << std::endl;
         }
         outFile << encodeNote(n) << std::endl;
@@ -958,29 +891,21 @@ void writeNotesToFile(std::vector<note_> notes) {
     outFile.close();
 }
 
+
 int main() {
     cv::Mat_<uchar> originalImage = openGrayscaleImage();
     cv::Mat_<uchar> binaryImg = convertToBinary(originalImage);
+
     std::vector<int> horizontalProjection = getHorizontalProjection(binaryImg);
-    std::vector<staff_> staffs = getStaffs(binaryImg, horizontalProjection);
-    cv::Mat_<uchar> openingImg = opening(binaryImg, sel);
+    std::vector<int> linesOverThreshold = getLinesOverThreshold(binaryImg,horizontalProjection);
+    std::vector<staff_> staffs = getStaffs(binaryImg, linesOverThreshold);
+
+    cv::Mat_<uchar> openingImg = opening(binaryImg, noteHeadStructuringElement);
     int maxLabel;
     cv::Mat_<int> labelImg = connectedComponentsBFS(openingImg, staffs, maxLabel);
-    //printf("%d", maxLabel);
-    std::vector<note_> notes = extractNotes(binaryImg, labelImg, maxLabel, staffs);
-    writeNotesToFile(notes);
 
-    /*
-    note_ n1 = makeNote(0, cv::Point2i(), "D4Q");
-    note_ n2 = makeNote(0, cv::Point2i(), "G4E");
-    note_ n3 = makeNote(0, cv::Point2i(), "G4E");
-    note_ n4 = makeNote(0, cv::Point2i(), "G4Q");
-    note_ n5 = makeNote(0, cv::Point2i(), "A4Q");
-    std::vector<note_> notes{n1, n2, n3, n4, n5};
+    std::vector<note_> notes = extractNotes(binaryImg, labelImg, maxLabel, staffs, linesOverThreshold);
     writeNotesToFile(notes);
-    */
-
-    //waitKey(0);
 
     if (RUN_PYTHON_SCRIPT) {
         system(PYTHON_COMMAND);
