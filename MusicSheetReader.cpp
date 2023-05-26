@@ -28,37 +28,27 @@
 #define MAX_NOTE_AREA 45
 #define LINE_OFFSET_TOLERANCE 1
 
+
 // structuring element for opening
 uchar pattern[25] = {
         255,	255,		0,		255,	255,
         255,	  0,		0,		  0,	255,
-        0,	  0,		0,		  0,	  0,
+          0,	  0,		0,		  0,	  0,
         255,	  0,		0,		  0,	255,
         255,	255,		0,		255,	255,
 };
-const cv::Mat_<uchar> sel = cv::Mat(4, 4, CV_8UC1, pattern);
-
-// some hardcoded colors
-const cv::Vec3b RED		(  0.0,   0.0, 255.0);
-const cv::Vec3b GREEN	(  0.0, 255.0,   0.0);
-const cv::Vec3b BLUE	(255.0,   0.0,   0.0);
-const cv::Vec3b YELLOW	(  0.0, 255.0, 255.0);
-const cv::Vec3b MAGENTA	(255.0,   0.0, 255.0);
-const cv::Vec3b CYAN	(255.0, 255.0,   0.0);
-const cv::Vec3b WHITE	(255.0, 255.0, 255.0);
-const cv::Vec3b GRAY	(150.0, 150.0, 150.0);
-const cv::Vec3b BLACK	(  0.0,   0.0,   0.0);
+const cv::Mat_<uchar> sel = cv::Mat(5, 5, CV_8UC1, pattern);
 
 
-// duration of a musical note
+// duration of a musical note_
 enum duration_ { whole, half, quarter, eighth ,sixteenth };
 
-// actual "value", "name" of musical note
+// actual "value", "name" of musical note_
 enum name_ { C, D, E, F, G, A, B };
 
 
-// structure for a musical note
-struct note {
+// structure for a musical note_
+struct note_ {
     name_ name;
     int octave;			// most usual is 4th
     duration_ duration;
@@ -69,9 +59,9 @@ struct line_ {
     int y;				// y coordinate of the line on the image
 };
 
-// lines grouped by 5 (a staff), upmost staff is 0
-// lines defined by index, uppermost is 0 (E4 as note), lowermost is 4 (A5 as note)
-struct staff {
+// lines grouped by 5 (a staff_), upmost staff_ is 0
+// lines defined by index, uppermost is 0 (E4 as note_), lowermost is 4 (A5 as note_)
+struct staff_ {
     line_ lines[5];
 };
 
@@ -90,7 +80,7 @@ bool compareTemporaryNotes(const temporaryNote& a, const temporaryNote& b)
     return a.x < b.x;
 }
 
-std::string encodeNote(note n) {
+std::string encodeNote(note_ n) {
     char encoding[4];
     switch (n.name) {
         case C: encoding[0] = 'C'; break;
@@ -113,9 +103,8 @@ std::string encodeNote(note n) {
         case sixteenth: encoding[2] = 'S'; break;
     }
     encoding[3] = '\0';
-    return std::string(encoding);
+    return encoding;  // cast from char array to string implicit
 }
-
 
 
 // Check if pixel at location (i,j) is inside the picture
@@ -126,7 +115,7 @@ bool isInside(cv::Mat img, int i, int j) {
 
 // Open the image and handles potential error
 cv::Mat_<uchar> openGrayscaleImage() {
-    cv::Mat_<uchar> img = cv::imread("Images/tannenbaum.bmp",cv::IMREAD_GRAYSCALE);
+    cv::Mat_<uchar> img = cv::imread(IMAGE_PATH,cv::IMREAD_GRAYSCALE);
 
     if (img.rows == 0 || img.cols == 0) {
         printf("Could not open image\n");
@@ -164,7 +153,8 @@ cv::Mat_<uchar> convertToBinary(cv::Mat_<uchar> img) {
 }
 
 
-cv::Mat_<uchar> copyImageWithGray(cv::Mat_<uchar> img) {
+// Return a binary image with black values 230 instead of 0 (visualization purposes)
+cv::Mat_<uchar> copyImageWithGrayUchar(cv::Mat_<uchar> img) {
     cv::Mat_<uchar> imgRes(img.rows, img.cols);
 
     for (int i = 0; i < img.rows; i++) {
@@ -182,12 +172,32 @@ cv::Mat_<uchar> copyImageWithGray(cv::Mat_<uchar> img) {
 }
 
 
+// Return a binary image with black values 230 instead of 0 (visualization purposes)
+cv::Mat_<cv::Vec3b> copyImageWithGrayVec3b(cv::Mat_<uchar> img) {
+    cv::Mat_<cv::Vec3b> imgRes(img.rows, img.cols);
+
+    for (int i = 0; i < img.rows; i++) {
+        for (int j = 0; j < img.cols; j++) {
+            if (img(i, j) == 0) {
+                imgRes(i, j) = cv::Vec3b(230.0, 230.0, 230.0);
+            }
+            else {
+                imgRes(i, j) = cv::Vec3b(255.0, 255.0, 255.0);
+            }
+        }
+    }
+
+    return imgRes;
+}
+
+
+// "Put imgTop on imgBottom", return result
 cv::Mat_<uchar> overlayImages(cv::Mat_<uchar> imgBottom, cv::Mat_<uchar> imgTop) {
     cv::Mat_<uchar> imgRes(imgBottom.rows, imgBottom.cols);
 
     for (int i = 0; i < imgBottom.rows; i++) {
         for (int j = 0; j < imgBottom.cols; j++) {
-            if (imgTop(i, j) != 255) {
+            if (imgTop(i, j) != 255) {  // imgTop has priority over resulting value, except if background
                 imgRes(i, j) = imgTop(i, j);
             }
             else {
@@ -213,7 +223,7 @@ std::vector<int> getHorizontalProjection(cv::Mat_<uchar> img) {
     }
 
     if (SHOW_HORIZONTAL_PROJECTION) {
-        cv::Mat_<uchar> imgRes = copyImageWithGray(img);
+        cv::Mat_<uchar> imgRes = copyImageWithGrayUchar(img);
         for (int i = 0; i < horizontalProjection.size(); i++) {
             for (int j = 0; j < horizontalProjection[i]; j++) {
                 imgRes(i, j) = 0;
@@ -227,19 +237,17 @@ std::vector<int> getHorizontalProjection(cv::Mat_<uchar> img) {
 
 
 // Extract the music sheet lines
-std::vector<staff> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalProjection) {
-    std::vector<staff> staffs;
+std::vector<staff_> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalProjection) {
+    std::vector<staff_> staffs;
 
     int threshold = img.cols * THRESHOLD_FOR_LINE;
     int lineCounter = 0;
-    staff currentStaff;
+    staff_ currentStaff = {};
 
     for (int i = 0; i < horizontalProjection.size(); i++) {
         // if we meet a line
         if (horizontalProjection[i] > threshold) {
-            line_ line;
-            line.y = i;
-            currentStaff.lines[lineCounter % 5] = line;
+            currentStaff.lines[lineCounter % 5] = line_ { i };
 
             // skip "redundant" lines
             while (i < horizontalProjection.size() && horizontalProjection[i] > threshold) {
@@ -257,10 +265,13 @@ std::vector<staff> getStaffs(cv::Mat_<uchar> img, std::vector<int> horizontalPro
     }
 
     if (SHOW_LINES) {
-        cv::Mat_<uchar> imgRes = copyImageWithGray(img);
+        cv::Mat_<cv::Vec3b> imgRes = copyImageWithGrayVec3b(img);
 
         // use two colors to somewhat distinguish nearby staffs
-        int colors[] = { 0, 100 };
+        cv::Vec3b colors[] = {
+                cv::Vec3b(255.0,   0.0,   0.0), // blue
+                cv::Vec3b(  0.0,   0.0, 255.0)  // red
+        };
 
         for (int staffNo = 0; staffNo < staffs.size(); staffNo++) {
             for (line_ line : staffs[staffNo].lines) {
@@ -316,7 +327,7 @@ cv::Mat_<uchar> erosion(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
     }
 
     if (SHOW_EROSION) {
-        cv::Mat_<uchar> resImg = copyImageWithGray(img);
+        cv::Mat_<uchar> resImg = copyImageWithGrayUchar(img);
         resImg = overlayImages(resImg, erosionImg);
         cv::imshow("Erosion", resImg);
     }
@@ -361,7 +372,7 @@ cv::Mat_<uchar> dilation(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
 
     if (SHOW_DILATION) {
         // effect will not be seen as dilationImg fully covers img (eroded image)
-        cv::Mat_<uchar> resImg = copyImageWithGray(img);
+        cv::Mat_<uchar> resImg = copyImageWithGrayUchar(img);
         resImg = overlayImages(resImg, dilationImg);
         cv::imshow("Dilation", resImg);
     }
@@ -386,7 +397,7 @@ cv::Mat_<uchar> opening(cv::Mat_<uchar> img, cv::Mat_<uchar> sel) {
 
 // Search for connected components in img using Breadth First Traversal
 // Note that the direction of going through the image corresponds to the direction of reading a music sheet
-cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff> staffs, int &maxLabel) {
+cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff_> staffs, int &maxLabel) {
     int currentLabel = 0;						// counter for labeling
     cv::Mat_<int> labelsImg(img.rows, img.cols, 0);	// labels of corresponding pixels, initially all 0s (unlabeled)
 
@@ -398,7 +409,7 @@ cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff> sta
     int ni, nj;	// neighbor index
 
     std::vector<std::pair<int, int>> staffRanges;
-    for (staff s : staffs) {
+    for (staff_ s : staffs) {
         int upperBound = s.lines[0].y - LINE_OFFSET_TOLERANCE;
         int lowerBound = s.lines[4].y + LINE_OFFSET_TOLERANCE;
         if (upperBound < 0) {
@@ -452,25 +463,44 @@ cv::Mat_<int> connectedComponentsBFS(cv::Mat_<uchar> img, std::vector<staff> sta
         }
     }
 
-
-
     if (SHOW_CONNECTED_COMPONENTS_BFS) {
         // generate random colors
         std::default_random_engine gen;
         std::uniform_int_distribution<int> d(0, 255);
         std::vector<cv::Vec3b> colors(currentLabel + 1);	// labeling has range [0, currentLabel]
 
-        colors[0] = WHITE;  // we consider 0 unlabeled, i.e. background
+        colors[0] = cv::Vec3b(255.0, 255.0, 255.0);  // we consider 0 unlabeled, i.e. background
+        bool seenLabel[currentLabel + 1];
         for (int i = 1; i <= currentLabel; i++) {
             colors[i] = cv::Vec3b(d(gen), d(gen), d(gen));	// other labels have random color
+            seenLabel[i] = false;
         }
 
+        //int count = 0;
         cv::Mat_<cv::Vec3b> colorImg(labelsImg.rows, labelsImg.cols);
         for (int i = 0; i < labelsImg.rows; i++) {
             for (int j = 0; j < labelsImg.cols; j++) {
-                colorImg(i, j) = colors[labelsImg(i, j)];
+                int label = labelsImg(i, j);
+                cv::Vec3b color = colors[label];
+
+                colorImg(i, j) = colors[label];
+
+                if (!seenLabel[label]) {
+                    cv::putText(
+                            colorImg,
+                            std::to_string(label),
+                            cv::Point(j, i),
+                            cv::FONT_HERSHEY_COMPLEX,
+                            0.5,
+                            cv::Scalar(color[0], color[1], color[2]),
+                            1,
+                            false);
+                    seenLabel[label] = true;
+                }
             }
         }
+
+
 
         cv::imshow("Connected Components BFS", colorImg);
     }
@@ -582,15 +612,15 @@ void removeComponent(cv::Mat_<int> labelImg, int label) {
 
 
 
-std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, int maxLabel, std::vector<staff> staffs) {
+std::vector<note_> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, int maxLabel, std::vector<staff_> staffs) {
     cv::Mat_<uchar> crossImg = cv::Mat::zeros(labelImg.rows, labelImg.cols, CV_8UC1);
 
     std::vector<int> noteLabels;
     std::vector<temporaryNote> temporaryNotes;
-    //std::vector<std::pair<note, int>> notesAndX;
-    //std::vector<note> notes;
+    //std::vector<std::pair<note_, int>> notesAndX;
+    //std::vector<note_> notes;
 
-    std::vector<std::vector<temporaryNote>> staffsWithtempNotes(staffs.size() + 1);  // why are there notes with staffNo 4 ??
+    std::vector<std::vector<temporaryNote>> staffsWithTempNotes(staffs.size() + 1);  // why are there notes with staffNo 4 ??
 
     // go through labels, skip 0 (background)
     for (int label = 1; label <= maxLabel; label++) {
@@ -617,7 +647,7 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
             drawCross(crossImg, com, 50);
         }
 
-        // passed all requirements => is considered a note
+        // passed all requirements => is considered a note_
         printf("%d: (%d,%d)\n", label, com.x, com.y);
 
         int tolerance = 1;
@@ -628,14 +658,14 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
         bool processed = false;
         int staffNo = 0;
         while (staffNo < staffs.size() && !processed) {
-            staff s = staffs[staffNo++];
+            staff_ s = staffs[staffNo++];
 
             if (com.y < s.lines[0].y - maxOffset || com.y > s.lines[4].y + maxOffset) {
-                // out of current staff's range, continue searching in next staff
+                // out of current staff_'s range, continue searching in next staff_
                 continue;
             }
 
-            // inside current staff's range, associate name and octave, and quit searching
+            // inside current staff_'s range, associate name and octave, and quit searching
             if (com.y < s.lines[0].y - tolerance) {
                 n = G;
                 octave = 5;
@@ -698,7 +728,7 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
             continue;
         }
 
-        staffsWithtempNotes[staffNo].push_back(temporaryNote{ n, octave, quarter, com.x, label });
+        staffsWithTempNotes[staffNo].push_back(temporaryNote{n, octave, quarter, com.x, label });
         noteLabels.push_back(label);
     }
 
@@ -706,16 +736,16 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
         imshow("CenterOfMass", crossImg);
     }
 
-    // sort notes on each staff
-    for (std::vector<temporaryNote> swtn : staffsWithtempNotes) {
+    // sort notes on each staff_
+    for (std::vector<temporaryNote> swtn : staffsWithTempNotes) {
         std::sort(swtn.begin(), swtn.end(), compareTemporaryNotes);
     }
 
     // extract notes while keeping order
-    std::vector<note> notes;
-    for (std::vector<temporaryNote> swtn : staffsWithtempNotes) {
+    std::vector<note_> notes;
+    for (std::vector<temporaryNote> swtn : staffsWithTempNotes) {
         for (temporaryNote tn : swtn) {
-            notes.push_back(note{ tn.name, tn.octave, tn.duration });
+            notes.push_back(note_{tn.name, tn.octave, tn.duration });
         }
     }
 
@@ -732,7 +762,7 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
                 }
             }
         }
-        cv::Mat_<uchar> resImg = copyImageWithGray(binaryImg);
+        cv::Mat_<uchar> resImg = copyImageWithGrayUchar(binaryImg);
         resImg = overlayImages(resImg, noteImg);
         imshow("All Notes", resImg);
     }
@@ -740,7 +770,7 @@ std::vector<note> extractNotes(cv::Mat_<int> binaryImg, cv::Mat_<int> labelImg, 
     return notes;
 }
 
-void writeNotesToFile(std::vector<note> notes) {
+void writeNotesToFile(std::vector<note_> notes) {
     std::ofstream outFile;
     outFile.open("notes.txt");
 
@@ -748,7 +778,7 @@ void writeNotesToFile(std::vector<note> notes) {
         std::cout << "Encoded notes:" << std::endl;
     }
 
-    for (note n : notes) {
+    for (note_ n : notes) {
         std::string encodedNote = encodeNote(n);
         if (SHOW_ALL_NOTES) {
             std::cout << encodedNote << std::endl;
@@ -762,21 +792,21 @@ int main() {
     cv::Mat_<uchar> originalImage = openGrayscaleImage();
     cv::Mat_<uchar> binaryImg = convertToBinary(originalImage);
     std::vector<int> horizontalProjection = getHorizontalProjection(binaryImg);
-    std::vector<staff> staffs = getStaffs(binaryImg, horizontalProjection);
+    std::vector<staff_> staffs = getStaffs(binaryImg, horizontalProjection);
     cv::Mat_<uchar> openingImg = opening(binaryImg, sel);
     int maxLabel;
     cv::Mat_<int> labelImg = connectedComponentsBFS(openingImg, staffs, maxLabel);
     //printf("%d", maxLabel);
-    std::vector<note> notes = extractNotes(binaryImg, labelImg, maxLabel, staffs);
+    std::vector<note_> notes = extractNotes(binaryImg, labelImg, maxLabel, staffs);
     writeNotesToFile(notes);
 
     /*
-    note n1 = makeNote(0, cv::Point2i(), "D4Q");
-    note n2 = makeNote(0, cv::Point2i(), "G4E");
-    note n3 = makeNote(0, cv::Point2i(), "G4E");
-    note n4 = makeNote(0, cv::Point2i(), "G4Q");
-    note n5 = makeNote(0, cv::Point2i(), "A4Q");
-    std::vector<note> notes{n1, n2, n3, n4, n5};
+    note_ n1 = makeNote(0, cv::Point2i(), "D4Q");
+    note_ n2 = makeNote(0, cv::Point2i(), "G4E");
+    note_ n3 = makeNote(0, cv::Point2i(), "G4E");
+    note_ n4 = makeNote(0, cv::Point2i(), "G4Q");
+    note_ n5 = makeNote(0, cv::Point2i(), "A4Q");
+    std::vector<note_> notes{n1, n2, n3, n4, n5};
     writeNotesToFile(notes);
     */
 

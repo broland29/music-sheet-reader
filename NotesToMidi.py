@@ -30,6 +30,7 @@ if __name__ == '__main__':
         exit(1)
 
     lines = file.readlines()
+    print(lines)
     notes = []
     for line in lines:
         note_and_octave = line[:2]
@@ -40,4 +41,4 @@ if __name__ == '__main__':
     s.append(notes)
     s.write('midi', fp=OUTPUT_PATH)
 
-    os.system("vlc /home/broland/Desktop/ip-project/my_melody.midi")
+    os.system(f"vlc {OUTPUT_PATH}")
